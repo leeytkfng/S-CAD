@@ -14,9 +14,16 @@ from models.wavlm_encoder import load_wavlm_speech_encoder
 import torchaudio as _torchaudio
 from models.sepformer import load_sepformer
 from models.sudormrf_separator import load_sudormrf, sudormrf_separate
-USE_SUDORMRF = os.path.exists("pretrained_models/sudormrf_separator.pt")
-# 전역 분리 함수 (process_single에서 접근)
-_sep_fn = sudormrf_separate if USE_SUDORMRF else step2_separate
+from models.convtasnet_separator import load_convtasnet, convtasnet_separate
+USE_CONVTASNET = os.path.exists("pretrained_models/convtasnet_separator.pt")
+USE_SUDORMRF   = os.path.exists("pretrained_models/sudormrf_separator.pt") and not USE_CONVTASNET
+# Conv-TasNet 우선, 없으면 SuDORM-RF, 없으면 SepFormer
+if USE_CONVTASNET:
+    _sep_fn = convtasnet_separate
+elif USE_SUDORMRF:
+    _sep_fn = sudormrf_separate
+else:
+    _sep_fn = step2_separate
 from steps.step0_gate import step0_gate
 from steps.step2_separate import step2_separate
 from steps.step6_noise_floor import step6_noise_floor
@@ -320,14 +327,15 @@ def main():
     print(f"파일 수집: REAL {real_cnt}개  MANIPULATE {manip_cnt}개  "
           f"FAKE {fake_cnt}개  (총 {len(entries)}개)\n")
 
-    # 분리기 선택: SuDORM-RF 또는 SepFormer
-    if USE_SUDORMRF:
+    # 분리기 선택: Conv-TasNet > SuDORM-RF > SepFormer
+    if USE_CONVTASNET:
+        sepformer = load_convtasnet()
+        print("[Separator] Conv-TasNet (5.0M, 경량)")
+    elif USE_SUDORMRF:
         sepformer = load_sudormrf()
-        _sep_fn   = sudormrf_separate
         print("[Separator] SuDORM-RF++ (2.6M, 경량)")
     else:
         sepformer = load_sepformer()
-        _sep_fn   = step2_separate
         print("[Separator] SepFormer (25.7M)")
     ckpt = GATE_CHECKPOINT if os.path.exists(GATE_CHECKPOINT) else None
     gate_model, gate_thr = load_gate_net(ckpt)

@@ -200,9 +200,14 @@ def main():
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.enabled   = True
 
-        # 분리기 선택: SuDORM-RF 또는 SepFormer
+        # 분리기 선택: Conv-TasNet > SuDORM-RF > SepFormer
+        from models.convtasnet_separator import load_convtasnet, convtasnet_separate, SAVE_PATH as CONV_PATH
         from models.sudormrf_separator import load_sudormrf, sudormrf_separate, SAVE_PATH as SUDO_PATH
-        if os.path.exists(SUDO_PATH):
+        if os.path.exists(CONV_PATH):
+            sepformer = load_convtasnet()
+            _sep_fn   = convtasnet_separate
+            print("[Step8] Conv-TasNet 사용 (5.0M)")
+        elif os.path.exists(SUDO_PATH):
             sepformer = load_sudormrf()
             _sep_fn   = sudormrf_separate
             print("[Step8] SuDORM-RF++ 사용 (2.6M)")

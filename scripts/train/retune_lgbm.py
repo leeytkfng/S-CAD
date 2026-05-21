@@ -43,27 +43,31 @@ print(f"\n[전체 피처 사용] {MASK_NAMES}\n")
 # {REAL=0, GENUINE=1, SPOOF_SPEECH=2, SPOOF_ENV=3, FAKE=4}
 
 # {REAL=0, GENUINE=1, SPOOF_SPEECH=2, SPOOF_ENV=3, FAKE=4}
-# v16 문제: GENUINE→REAL 오분류 180건 (gate 낮은 GENUINE이 REAL로 흡수)
-# → REAL 가중치 낮추고 GENUINE 올리기 + SE 유지
+# Conv-TasNet -18.21dB 기준 재튜닝
+# 문제: FAKE(4)=1.7 << SPOOF_SPEECH(2)=3.8 → 경계에서 SS로 치우침
+# 목표: FAKE 가중치 2.5~3.0으로 올리고, SS-FAKE 경계 정밀화
 
 configs = [
-    ("REAL×1.2 + GENUINE×2.5 (REAL 낮춤)",
+    # 기존 GENUINE 보호 + FAKE 소폭 강화
+    ("FAKE×2.5 + SS×3.5 (FAKE 기본 강화)",
      dict(n_estimators=300, learning_rate=0.05, num_leaves=15,
           max_depth=4, min_child_samples=50, subsample=0.8,
           colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1.0,
-          class_weight={0: 1.2, 1: 2.5, 2: 3.8, 3: 2.5, 4: 1.7},
+          class_weight={0: 1.2, 1: 2.5, 2: 3.5, 3: 2.0, 4: 2.5},
           random_state=SEED, verbose=-1)),
-    ("REAL×1.0 + GENUINE×3.0 (REAL 기본, GENUINE 강화)",
+    # SS-FAKE 동등 가중치 — 경계 중립
+    ("FAKE×3.0 + SS×3.0 (SS-FAKE 균등)",
      dict(n_estimators=300, learning_rate=0.05, num_leaves=15,
           max_depth=4, min_child_samples=50, subsample=0.8,
           colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1.0,
-          class_weight={0: 1.0, 1: 3.0, 2: 3.8, 3: 2.5, 4: 1.7},
+          class_weight={0: 1.2, 1: 2.5, 2: 3.0, 3: 2.0, 4: 3.0},
           random_state=SEED, verbose=-1)),
-    ("REAL×1.5 + GENUINE×2.0 + SE×2.5 (균형)",
-     dict(n_estimators=300, learning_rate=0.05, num_leaves=15,
-          max_depth=4, min_child_samples=50, subsample=0.8,
-          colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1.0,
-          class_weight={0: 1.5, 1: 2.0, 2: 3.8, 3: 2.5, 4: 1.7},
+    # FAKE 공격적 강화 + min_child_samples 낮춰 세밀한 분기
+    ("FAKE×3.0 + SS×3.0 + min_child=20 (세밀 분기)",
+     dict(n_estimators=400, learning_rate=0.04, num_leaves=20,
+          max_depth=5, min_child_samples=20, subsample=0.8,
+          colsample_bytree=0.8, reg_alpha=0.05, reg_lambda=0.5,
+          class_weight={0: 1.2, 1: 2.5, 2: 3.0, 3: 2.0, 4: 3.0},
           random_state=SEED, verbose=-1)),
 ]
 

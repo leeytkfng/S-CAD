@@ -14,17 +14,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import Dataset, DataLoader
-from asteroid.models import SuDORMRFImprovedNet
+from asteroid.models import ConvTasNet
 
 from config import DATASET_ROOT, METADATA_DIR
-from models.sudormrf_separator import SAVE_PATH
+SAVE_PATH = 'pretrained_models/convtasnet_separator.pt'
 
 DEVICE     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SAMPLE_RATE = 16000
 MAX_LEN     = 64000
-BATCH_SIZE  = 8
-EPOCHS      = 10
-LR          = 3e-6    # 더 안정적으로
+BATCH_SIZE  = 8      # 다른 프로세스 고려
+EPOCHS      = 30
+LR          = 5e-6    # warm-start이므로 더 낮게
 MAX_PER_LABEL = 4000
 SEED        = 42
 
@@ -102,7 +102,7 @@ def energy_ratio_loss(est, gt_s, gt_e, best0):
 
 def main():
     print("="*60)
-    print("SuDORM-RF++ 파인튜닝 (CompSpoofV2)")
+    print("Conv-TasNet 파인튜닝 (CompSpoofV2)")
     print(f"Device: {DEVICE}  Batch: {BATCH_SIZE}  Epochs: {EPOCHS}")
     print(f"VRAM 40GB 모드: 대형 배치 최적화")
     print("="*60)
@@ -112,13 +112,21 @@ def main():
                         num_workers=0, pin_memory=False)
     print(f"배치 수: {len(loader)}\n")
 
-    model     = SuDORMRFImprovedNet(n_src=2, sample_rate=SAMPLE_RATE).to(DEVICE)
+    model = ConvTasNet(n_src=2, sample_rate=SAMPLE_RATE).to(DEVICE)
+
+    # warm-start: 기존 체크포인트 로드
+    if os.path.exists(SAVE_PATH):
+        ckpt = torch.load(SAVE_PATH, map_location=DEVICE)
+        model.load_state_dict(ckpt["model"])
+        best_loss = ckpt.get("loss", float("inf"))
+        print(f"[Warm-start] 기존 체크포인트 로드 (loss={best_loss:.4f})")
+    else:
+        best_loss = float("inf")
+        print("[새로 학습] 체크포인트 없음")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=EPOCHS * len(loader))
-    # scaler 제거 (fp32만 사용)
-
-    best_loss = float("inf")
 
     for epoch in range(1, EPOCHS + 1):
         model.train()

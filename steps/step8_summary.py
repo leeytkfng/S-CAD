@@ -8,16 +8,17 @@ import pickle
 import numpy as np
 import torch
 
-LGBM_PATH        = "pretrained_models/step8_lgbm.pkl"
-FAKE_DETECTOR_PATH = "pretrained_models/fake_detector.pkl"
-LABEL_NAMES      = ["REAL", "GENUINE", "SPOOF_SPEECH", "SPOOF_ENV", "FAKE"]
+LGBM_PATH            = "pretrained_models/step8_lgbm.pkl"
+FAKE_DETECTOR_PATH   = "pretrained_models/fake_detector.pkl"
+SUDO_FAKE_DETECTOR   = "pretrained_models/sudo_fake_detector.pkl"
+LABEL_NAMES          = ["REAL", "GENUINE", "SPOOF_SPEECH", "SPOOF_ENV", "FAKE"]
 
-# rule-based fallback 임계값
 GATE_REAL_THR  = 0.30
 GATE_FAKE_THR  = 0.80
 
-_model         = None
-_fake_detector = None
+_model              = None
+_fake_detector      = None
+_sudo_fake_detector = None
 
 
 def _load_model():
@@ -47,6 +48,19 @@ def _load_fake_detector():
     else:
         _fake_detector = None
     return _fake_detector
+
+
+def _load_sudo_fake_detector():
+    global _sudo_fake_detector
+    if _sudo_fake_detector is not None:
+        return _sudo_fake_detector
+    if os.path.exists(SUDO_FAKE_DETECTOR):
+        with open(SUDO_FAKE_DETECTOR, "rb") as f:
+            _sudo_fake_detector = pickle.load(f)
+        print(f"[Step8] SuDORM-RF FAKE Detector 로드 (thr={_sudo_fake_detector['threshold']:.2f})")
+    else:
+        _sudo_fake_detector = None
+    return _sudo_fake_detector
 
 
 def _rule_based(gate_score, speech_score, env_score):
@@ -153,18 +167,42 @@ def step8_summary(gate_score, speech_score, env_score, label="?",
             X_fd       = np.array([[*X_fd_base, min_stream]], dtype=np.float32)
             fake_proba = fd['model'].predict_proba(X_fd)[0][1]
             thr        = fd['threshold']
-            # 가드 조건:
-            # 1) env_score > 0.45: SPOOF_SPEECH 오탐 방지 (avg 0.337)
-            # 2) speech_score > 0.5: REAL 오탐 방지
-            # 3) energy_ratio > 0.65: REAL(original) 오탐 방지
-            #    original energy_ratio≈0.50, FAKE≈0.85 → 0.65 기준 분리
+            # 가드 조건 (Conv-TasNet -18.21dB 실측 기준):
+            # Conv-TasNet에서 FAKE env_score avg≈0.072, SS env_score avg≈0.065
+            # → env_score로 구분 불가. speech_score로 SS(0.965) vs FAKE(0.896) 구분
+            # 1) speech_score < 0.94: SS(0.965) 오탐 방지, FAKE(0.896) 허용
+            # 2) speech_score > 0.60: REAL/GENUINE 오탐 방지
+            # 3) energy_ratio > 0.55: REAL(0.50) 오탐 방지
             energy_ratio = kwargs.get("energy_ratio", 0.5)
-            if (fake_proba >= thr and env_score > 0.45
-                    and speech_score > 0.5 and energy_ratio > 0.65):
+            if (fake_proba >= thr
+                    and speech_score > 0.60 and speech_score < 0.94
+                    and energy_ratio > 0.55):
                 prediction = "FAKE"
                 confidence = float(fake_proba)
                 mode       = f"LightGBM+FakeDetector(p={fake_proba:.2f})"
             proba_str += f"  FAKE_det={fake_proba:.2f}"
+
+        # SuDORM-RF FAKE Detector (env_score 낮을 때 보완)
+        # SPOOF_SPEECH 오탐 방지:
+        #   SPOOF_SPEECH: speech≈0.93 (높음), gate≈0.82
+        #   FAKE:         speech≈0.82 (낮음), gate≈0.91 (더 높음)
+        #   → speech < 0.88 AND gate > 0.88 일 때만 FAKE 교정
+        sfd = _load_sudo_fake_detector()
+        if sfd is not None and env_score < 0.04:  # env 완전 낮을 때만
+            feat_idx = sfd['feat_idx']
+            X_sfd = X[0, [i for i in feat_idx if i < X.shape[1]]]
+            if len(X_sfd) < len(feat_idx):
+                X_sfd = np.pad(X_sfd, (0, len(feat_idx)-len(X_sfd)))
+            sudo_proba = sfd['model'].predict_proba(X_sfd.reshape(1,-1))[0][1]
+            # 강화된 가드: SPOOF_SPEECH(speech 0.93) 제외
+            if (sudo_proba >= sfd['threshold']
+                    and gate_score > 0.85      # 중간값
+                    and speech_score < 0.90    # SS(0.93) 제외, FAKE(0.82) 포함
+                    and speech_score > 0.6):
+                prediction = "FAKE"
+                confidence = float(sudo_proba)
+                mode       = f"SuDORM-FAKE-Det(p={sudo_proba:.2f})"
+            proba_str += f"  sudo_fake={sudo_proba:.2f}"
 
     print(f"  gate={gate_score:.4f}  speech={speech_score:.4f}  env={env_score:.4f}")
     print(f"  noise_dist={noise_dist:.4f}  slope_diff={slope_diff:.2f}"

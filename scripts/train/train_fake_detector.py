@@ -39,24 +39,25 @@ if not os.path.exists(FEAT_CACHE):
     exit(1)
 
 data   = np.load(FEAT_CACHE)
-X_full = data["X"]   # (N, 12)
-y_full = data["y"]   # 0=REAL 1=SS 2=SE 3=FAKE
+X_full = data["X"]   # (N, 19)
+y_full = data["y"]   # 0=REAL 1=GENUINE 2=SPOOF_SPEECH 3=SPOOF_ENV 4=FAKE
 
 # ── FAKE 전용 피처 구성 ────────────────────────────────────────
 X_base     = X_full[:, BASE_IDX]                          # (N, 5)
 min_stream = np.minimum(X_full[:, 1], X_full[:, 2])      # min(speech, env)
 X          = np.hstack([X_base, min_stream.reshape(-1,1)]) # (N, 6)
 
-# 이진 레이블: 3(FAKE)=1, 나머지=0
-y_bin = (y_full == 3).astype(np.int32)
+# 이진 레이블: 4(FAKE)=1, 나머지=0  ← 5-class 기준
+y_bin = (y_full == 4).astype(np.int32)
 
 print(f"전체: {len(y_bin)}개  |  FAKE: {y_bin.sum()}개  |  not-FAKE: {(y_bin==0).sum()}개")
 print(f"사용 피처: {FEAT_NAMES}\n")
 
 # ── 클래스별 분포 확인 ─────────────────────────────────────────
-label_names = ["REAL", "SPOOF_SPEECH", "SPOOF_ENV", "FAKE"]
+label_names = ["REAL", "GENUINE", "SPOOF_SPEECH", "SPOOF_ENV", "FAKE"]
 for i, n in enumerate(label_names):
     mask = y_full == i
+    if mask.sum() == 0: continue
     print(f"  [{n}]  speech_avg={X_full[mask,1].mean():.3f}"
           f"  env_avg={X_full[mask,2].mean():.3f}"
           f"  min_avg={min_stream[mask].mean():.3f}"
