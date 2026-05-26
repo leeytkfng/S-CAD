@@ -1,7 +1,7 @@
 # S-CAD: Spatial-Consistency-Aware Audio Detection
 
 > **복합 오디오 딥페이크 탐지 프레임워크** — 음원 분리 기반 5-class 판별 시스템  
-> 정보처리학회 논문 제출 (2025)
+> 정보처리학회 논문 제출 (2026)
 
 ---
 
