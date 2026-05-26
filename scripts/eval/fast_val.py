@@ -12,6 +12,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import librosa
+import parselmouth
 from concurrent.futures import ThreadPoolExecutor
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
@@ -119,8 +120,10 @@ def extract_cpu_feats(args):
     energy_ratio = se / (se + ee + 1e-8)
 
     try:
-        f0 = librosa.yin(y_s, fmin=50, fmax=400, sr=SAMPLE_RATE)
-        f0v = f0[f0 > 0]
+        snd = parselmouth.Sound(y_s.astype(np.float64), sampling_frequency=float(SAMPLE_RATE))
+        pitch_obj = snd.to_pitch(time_step=0.01, pitch_floor=50.0, pitch_ceiling=400.0)
+        f0v = pitch_obj.selected_array['frequency']
+        f0v = f0v[f0v > 0]
         pitch_mean = float(np.mean(f0v)) if len(f0v) > 0 else 0.0
         pitch_std  = float(np.std(f0v))  if len(f0v) > 0 else 0.0
     except Exception:
