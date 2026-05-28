@@ -22,6 +22,8 @@ __pycache__/
 paper_draft*.md
 paper_sections.md
 paper_final.md
+PPT*_slide_draft.md
+SESSION_SUMMARY.md
 figure*.png
 architecture.png
 sepformer_finetune_report.pdf
