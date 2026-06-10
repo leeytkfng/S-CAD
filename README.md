@@ -27,7 +27,8 @@ S-CAD separates an input recording into a **speech stream** and an **environment
 
 ## Pipeline Architecture
 
-![alt text](<스크린샷 2026-06-10 오후 5.30.58.png>)
+<img width="944" height="517" alt="스크린샷 2026-06-10 오후 5 30 58" src="https://github.com/user-attachments/assets/8cbe5af3-2e77-49a8-83d4-0d454679dc07" />
+
 
 **Core design principle:** physically grounded features (RT60 decay, noise-floor consistency, inter-stream coherence) describe properties of the *recording environment*, not of any particular synthesis method — making them robust to unseen (OOD) generation techniques.
 
