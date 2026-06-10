@@ -27,48 +27,7 @@ S-CAD separates an input recording into a **speech stream** and an **environment
 
 ## Pipeline Architecture
 
-```
-                         Input Audio (4s, 16kHz)
-                                  │
-                                  ▼
-                  ┌───────────────────────────────┐
-                  │ Step 0 — LCNN-SE Gatekeeper     │
-                  │   gate_score < 0.30 → REAL      │  (early exit)
-                  └────────────────┬─────────────────┘
-                                  │ uncertain
-                                  ▼
-                  ┌───────────────────────────────┐
-                  │ Step 2 — Source Separation       │  Conv-TasNet (default, 5.0M)
-                  │   L_SI-SNR(PIT) + 0.5·L_Energy   │  SepFormer / SuDORM-RF++ also supported
-                  └──────────┬─────────────┬─────────┘
-                             │             │
-                     Speech Stream     Env Stream
-                             │             │
-                             ▼             ▼
-                  ┌──────────────┐  ┌──────────────┐
-                  │ WavLM (94M)   │  │ LCNN-SE (0.6M)│
-                  │ → speech_score│  │ → env_score   │
-                  └───────┬───────┘  └───────┬───────┘
-                          │                  │
-                          └────────┬─────────┘
-                                   ▼
-                  ┌───────────────────────────────┐
-                  │ Acoustic Consistency Analysis    │
-                  │  noise_dist · slope_diff (RT60)  │
-                  │  MSC · cross-correlation         │
-                  └────────────────┬─────────────────┘
-                                   ▼
-                  ┌───────────────────────────────┐
-                  │ Feature Engineering (19-dim)     │
-                  └────────────────┬─────────────────┘
-                                   ▼
-                  ┌───────────────────────────────┐
-                  │ Step 8 — LightGBM (5-class)      │
-                  │   + FAKE binary detector         │
-                  └────────────────┬─────────────────┘
-                                   ▼
-            REAL · GENUINE · SPOOF_SPEECH · SPOOF_ENV · FAKE
-```
+![alt text](<스크린샷 2026-06-10 오후 5.30.58.png>)
 
 **Core design principle:** physically grounded features (RT60 decay, noise-floor consistency, inter-stream coherence) describe properties of the *recording environment*, not of any particular synthesis method — making them robust to unseen (OOD) generation techniques.
 
