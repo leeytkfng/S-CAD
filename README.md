@@ -1,223 +1,273 @@
-# S-CAD: Spatial-Consistency-Aware Audio Detection
+# S-CAD: Spatial-Consistency-Aware Audio Deepfake Detection
 
-> **복합 오디오 딥페이크 탐지 프레임워크** — 음원 분리 기반 5-class 판별 시스템  
-> 정보처리학회 논문 제출 (2026)
-
----
-
-## 왜 이 연구인가?
-
-기존 딥페이크 오디오 탐지 모델(AASIST, WavLM 등)은 **단일 스트림 판별** 방식으로, 음성이 가짜인지만 판단한다.  
-하지만 실제 공격은 이미 **음성 + 환경음을 동시에 조작**하는 복합 위변조로 진화했다.
-
-S-CAD는 오디오를 **음성 스트림**과 **환경음 스트림**으로 분리한 뒤 각각을 독립적으로 분석하여,  
-"어느 채널이 가짜인지"까지 판별하는 최초의 5-class 복합 위변조 탐지 시스템이다.
+> A source-separation-based framework for detecting **compound audio deepfakes** through 5-class discrimination.
+> Manuscript in preparation for submission to the Korea Information Processing Society (KIPS), 2026.
 
 ---
 
-## 5-Class 분류 체계
+## Motivation
 
-| 클래스 | 설명 | 음성 | 환경음 |
-|--------|------|------|--------|
-| `REAL` | 원본 (혼합 없음) | 진짜 | - |
-| `GENUINE` | 진짜+진짜 혼합 | 진짜 | 진짜 |
-| `SPOOF_SPEECH` | 음성만 합성 | **가짜** | 진짜 |
-| `SPOOF_ENV` | 환경음만 합성 | 진짜 | **가짜** |
-| `FAKE` | 음성+환경음 모두 합성 | **가짜** | **가짜** |
+Existing audio deepfake detectors (AASIST, WavLM, etc.) operate on a **single-stream binary** assumption: is the speech real or fake? In practice, however, modern forgery pipelines manipulate **speech and background audio simultaneously**, producing compound forgeries that single-stream models cannot characterize.
+
+S-CAD separates an input recording into a **speech stream** and an **environmental-sound stream**, analyzes each independently, and cross-checks their physical acoustic consistency. The result is the first 5-class system that not only flags a recording as fake, but identifies **which channel was forged**.
 
 ---
 
-## 시스템 구조
+## 5-Class Taxonomy
+
+| Class | Description | Speech | Environment |
+|---|---|:---:|:---:|
+| `REAL` | Original recording (no mixing) | genuine | – |
+| `GENUINE` | Genuine speech + genuine environment, mixed | genuine | genuine |
+| `SPOOF_SPEECH` | Synthetic speech only | **fake** | genuine |
+| `SPOOF_ENV` | Synthetic environment only | genuine | **fake** |
+| `FAKE` | Both speech and environment synthesized | **fake** | **fake** |
+
+---
+
+## Pipeline Architecture
 
 ```
-[오디오 입력]
-     │
-[Step 0] LCNN-SE Gatekeeper ──→ REAL 조기 판정 (gate_score < 0.30)
-     │
-[Step 2] 음원 분리기 (Conv-TasNet / SepFormer)
-     ├── 🗣️ Speech Stream
-     └── 🌿 Env Stream
-     │
-[Step 3~7] 스트림별 피처 추출
-     ├── speech_score  (WavLM 기반 위변조 점수)
-     ├── env_score     (LCNN-SE 기반 위변조 점수)
-     ├── noise_dist    (무음 구간 PSD 일관성)
-     ├── slope_diff    (EDC 감쇠 기울기 차이)
-     └── MSC / XCorr  (스트림 간 위상 일관성)
-     │
-[Step 8] LightGBM 19-dim → 5-class 판정
-     └── REAL / GENUINE / SPOOF_SPEECH / SPOOF_ENV / FAKE
+                         Input Audio (4s, 16kHz)
+                                  │
+                                  ▼
+                  ┌───────────────────────────────┐
+                  │ Step 0 — LCNN-SE Gatekeeper     │
+                  │   gate_score < 0.30 → REAL      │  (early exit)
+                  └────────────────┬─────────────────┘
+                                  │ uncertain
+                                  ▼
+                  ┌───────────────────────────────┐
+                  │ Step 2 — Source Separation       │  Conv-TasNet (default, 5.0M)
+                  │   L_SI-SNR(PIT) + 0.5·L_Energy   │  SepFormer / SuDORM-RF++ also supported
+                  └──────────┬─────────────┬─────────┘
+                             │             │
+                     Speech Stream     Env Stream
+                             │             │
+                             ▼             ▼
+                  ┌──────────────┐  ┌──────────────┐
+                  │ WavLM (94M)   │  │ LCNN-SE (0.6M)│
+                  │ → speech_score│  │ → env_score   │
+                  └───────┬───────┘  └───────┬───────┘
+                          │                  │
+                          └────────┬─────────┘
+                                   ▼
+                  ┌───────────────────────────────┐
+                  │ Acoustic Consistency Analysis    │
+                  │  noise_dist · slope_diff (RT60)  │
+                  │  MSC · cross-correlation         │
+                  └────────────────┬─────────────────┘
+                                   ▼
+                  ┌───────────────────────────────┐
+                  │ Feature Engineering (19-dim)     │
+                  └────────────────┬─────────────────┘
+                                   ▼
+                  ┌───────────────────────────────┐
+                  │ Step 8 — LightGBM (5-class)      │
+                  │   + FAKE binary detector         │
+                  └────────────────┬─────────────────┘
+                                   ▼
+            REAL · GENUINE · SPOOF_SPEECH · SPOOF_ENV · FAKE
 ```
 
-**핵심 설계 철학:** 물리 법칙 기반 피처(RT60, Noise Floor, Coherence)는 새로운 합성 방식이 등장해도 변하지 않는다 → OOD 강건성 확보
+**Core design principle:** physically grounded features (RT60 decay, noise-floor consistency, inter-stream coherence) describe properties of the *recording environment*, not of any particular synthesis method — making them robust to unseen (OOD) generation techniques.
+
+For a component-by-component breakdown, see [architecture.md](architecture.md).
 
 ---
 
-## 주요 실험 결과
+## Key Results
 
-### 분리기별 성능 비교 (CompSpoofV2 val, 24,864 samples)
+All results below were measured on the **CompSpoofV2 validation set** (24,864 samples). Full classification reports, confusion matrices, and feature-importance tables are in [RESULTS.md](RESULTS.md).
 
-| 분리기 | Params | SI-SNR | Accuracy | Macro-F1 | FAKE Recall |
-|--------|--------|--------|----------|----------|-------------|
+### Separator Comparison
+
+| Separator | Params | SI-SNR | Accuracy | Macro-F1 | FAKE Recall |
+|---|---:|---:|---:|---:|---:|
 | SuDORM-RF++ | 2.6M | 12.5 dB | ~62% | ~0.59 | ~15% |
-| **Conv-TasNet (ours)** | **5.0M** | **18.2 dB** | **69.8%** | **0.6564** | **56.4%** |
+| **Conv-TasNet (ours, default)** | **5.0M** | **18.2 dB** | **69.8%** | **0.6564** | **56.4%** |
 | SepFormer | 25.7M | 24.5 dB | ~73% | ~0.71 | 64.5% |
 
-### 비교 모델 대비 (동일 피처 기준)
+Conv-TasNet is used as the default separator: it reaches **5x fewer parameters** than SepFormer while remaining competitive, making it the practical choice for deployment.
 
-| 모델 | Params | 사전학습 | Accuracy | Macro-F1 |
-|------|--------|---------|----------|----------|
-| LFCC-GMM | - | ✗ | 63.0% | 0.6314 |
-| LFCC-SVM | - | ✗ | 70.0% | 0.6993 |
-| AASIST-L | 0.11M | ✗ | - | 0.817* |
-| WavLM-base | 94M | ✓ | - | 0.912* |
-| **S-CAD (Conv-TasNet)** | **5.0M** | **최소** | **69.8%** | **0.6564** |
+### Comparison with Prior Work
 
-\* 단일 스트림 이진 분류 기준 (5-class 직접 비교 불가)
+| Model | Params | Pretrained | Accuracy | Macro-F1 |
+|---|---:|:---:|---:|---:|
+| LFCC-GMM | – | ✗ | 63.0% | 0.6314 |
+| LFCC-SVM | – | ✗ | 70.0% | 0.6993 |
+| AASIST-L | 0.11M | ✗ | – | 0.817* |
+| WavLM-base | 94M | ✓ | – | 0.912* |
+| **S-CAD (Conv-TasNet)** | **5.0M** | partial (WavLM only) | **69.8%** | **0.6564** |
 
-### 클래스별 정확도 (Conv-TasNet 기준)
+\* Single-stream binary classification (not directly comparable to the 5-class task).
 
-| 클래스 | 정확도 | 샘플 수 |
-|--------|--------|--------|
+### Per-Class Accuracy (Conv-TasNet, 30 epochs)
+
+| Class | Accuracy | Samples |
+|---|---:|---:|
 | REAL | 82.1% | 6,939 |
 | GENUINE | 71.3% | 2,784 |
 | SPOOF_SPEECH | 63.4% | 2,413 |
 | SPOOF_ENV | 68.4% | 8,071 |
 | FAKE | 56.4% | 4,657 |
-| **전체** | **69.8%** | **24,864** |
+| **Overall** | **69.8%** | **24,864** |
+
+### Separation Quality Drives Detection Performance
+
+A 3.5 dB SI-SNR improvement (14.7 → 18.2 dB, from 5 → 30 training epochs) raised FAKE recall by more than 3x (18.2% → 56.4%). This quantitatively confirms that **separation quality is the primary bottleneck** for compound-forgery detection — see [RESULTS.md §6](RESULTS.md) for the full optimization trace.
 
 ---
 
-## 설치
+## Installation
 
 ```bash
 git clone https://github.com/leeytkfng/S-CAD.git
 cd S-CAD
 
 pip install torch torchaudio asteroid lightgbm scikit-learn \
-            librosa transformers speechbrain scipy numpy
+            librosa parselmouth transformers speechbrain scipy numpy
 ```
 
-**데이터셋**: [CompSpoofV2](https://zenodo.org/record/8343807) 다운로드 후 압축 해제
+### Dataset
 
-```bash
-# config.py에서 경로 설정
+S-CAD is trained and evaluated on **[CompSpoofV2](https://zenodo.org/record/8343807)**. Download and extract it, then point `config.py` at the directory:
+
+```python
+# config.py
 DATASET_ROOT = '/data/CompSpoofV2'
 ```
 
 ---
 
-## 학습 순서
+## Training Pipeline
 
 ```bash
-# 1. Gate 모델 학습
+# 1. Train the gatekeeper
 python3 scripts/train/train_gate.py
 
-# 2. 음성/환경 인코더 학습
+# 2. Train speech / environment encoders
 python3 scripts/train/train_speech_encoder.py
 python3 scripts/train/train_env_encoder.py
 
-# 3. 음원 분리기 파인튜닝 (Conv-TasNet 추천)
+# 3. Fine-tune the source separator (Conv-TasNet recommended)
 python3 scripts/train/finetune_convtasnet.py
 
-# 4. LightGBM 피처 추출 + 학습
+# 4. Extract features and train LightGBM (Step 8)
 python3 scripts/train/train_step8.py
 
-# 5. LightGBM 리튜닝 (옵션)
+# 5. Re-tune LightGBM (optional)
 python3 scripts/train/retune_lgbm.py
 
-# 6. FAKE 이진 분류기 학습
+# 6. Train the FAKE binary detector
 python3 scripts/train/train_fake_detector.py
 ```
 
+A convenience script that chains steps 4–6 end-to-end is available at `scripts/run_post_training_pipeline.sh`.
+
 ---
 
-## 평가
+## Evaluation
 
 ```bash
-# 빠른 배치 평가 (VRAM 활용, 권장)
-python3 scripts/eval/fast_val.py
+# Fast batched validation (GPU batching + parallel CPU features, recommended)
+python3 scripts/eval/fast_val.py                   # Conv-TasNet (default)
+python3 scripts/eval/fast_val.py --sep sepformer   # SepFormer
 
-# 상세 단계별 평가
+# Step-by-step evaluation (verbose, single-sample)
 python3 main.py
 
-# 분리기 비교 실험
+# Separator comparison experiment
 python3 scripts/eval/compare_separators.py
 
 # Ablation study
 python3 scripts/eval/ablation_study.py
+
+# Zero-shot / linear-probe OOD robustness vs. Wav2Vec2
+python3 scripts/eval/zeroshot_wav2vec2.py --mode zeroshot
+python3 scripts/eval/zeroshot_wav2vec2.py --mode linear_probe
+python3 scripts/eval/zeroshot_wav2vec2.py --mode finetune
 ```
+
+`fast_val.py` uses [parselmouth](https://github.com/YannickJadoul/Parselmouth) for pitch extraction, a **12x speedup** over `librosa.yin` that removes the main CPU bottleneck of the evaluation loop.
 
 ---
 
-## 프로젝트 구조
+## Project Structure
 
 ```
 S-CAD/
-├── main.py                    # 메인 평가 파이프라인
-├── config.py                  # 경로 및 하이퍼파라미터 설정
+├── main.py                      # Step-by-step evaluation pipeline
+├── config.py                    # Paths and hyperparameters
 │
-├── models/                    # 모델 정의
-│   ├── gate_net.py            # LCNN-SE Gatekeeper
-│   ├── convtasnet_separator.py # Conv-TasNet 음원 분리기
-│   ├── sepformer.py           # SepFormer 음원 분리기
-│   ├── sudormrf_separator.py  # SuDORM-RF++ 음원 분리기
-│   └── wavlm_encoder.py       # WavLM 기반 음성 인코더
+├── models/                      # Model definitions
+│   ├── gate_net.py               # LCNN-SE gatekeeper / stream encoders
+│   ├── convtasnet_separator.py   # Conv-TasNet separator (default)
+│   ├── sepformer.py               # SepFormer separator
+│   ├── sudormrf_separator.py     # SuDORM-RF++ separator
+│   └── wavlm_encoder.py          # WavLM-based speech encoder
 │
-├── steps/                     # 파이프라인 각 단계
-│   ├── step0_gate.py          # 1차 필터 (Gatekeeper)
-│   ├── step2_separate.py      # 음원 분리
-│   ├── step6_noise_floor.py   # Noise Floor 일관성 분석
-│   ├── step7_5_rt60.py        # EDC / RT60 기울기 분석
-│   └── step8_summary.py       # LightGBM 최종 판정
+├── steps/                        # Pipeline stages
+│   ├── step0_gate.py              # Stage 1 filter (gatekeeper)
+│   ├── step2_separate.py          # Source separation
+│   ├── step6_noise_floor.py       # Noise-floor (PSD) consistency
+│   ├── step7_5_rt60.py            # EDC / RT60 slope analysis
+│   └── step8_summary.py           # Final LightGBM decision
 │
 ├── scripts/
-│   ├── train/                 # 학습 스크립트
+│   ├── train/                     # Training scripts
 │   │   ├── finetune_convtasnet.py
 │   │   ├── train_step8.py
 │   │   ├── retune_lgbm.py
 │   │   └── train_fake_detector.py
-│   └── eval/                  # 평가 스크립트
-│       ├── fast_val.py        # 배치 처리 빠른 평가
-│       ├── ablation_study.py
-│       └── compare_separators.py
+│   ├── eval/                      # Evaluation scripts
+│   │   ├── fast_val.py             # Fast batched validation
+│   │   ├── ablation_study.py
+│   │   ├── compare_separators.py
+│   │   └── zeroshot_wav2vec2.py    # OOD robustness vs. Wav2Vec2
+│   └── run_post_training_pipeline.sh
 │
-└── comparison_models/         # 비교 베이스라인
-    ├── aasist_light.py
-    ├── wav2vec2_classifier.py
-    └── huggingface_models.py
+├── comparison_models/            # Baseline models
+│   ├── aasist_light.py
+│   ├── wav2vec2_classifier.py
+│   └── huggingface_models.py
+│
+├── architecture.md               # Detailed component documentation
+└── RESULTS.md                    # Full experimental results
 ```
 
 ---
 
-## 핵심 기여
+## Key Contributions
 
-1. **복합 오디오 위변조 5-class 분류** 프레임워크 최초 제안
-2. **음원 분리 + 물리 음향 피처** 결합으로 해석 가능한 판정 제공
-3. **SI-SNR ↔ FAKE recall 상관관계** 정량 분석 (분리 품질이 탐지 성능의 병목임을 실증)
-4. Conv-TasNet(5M)으로 SepFormer(25.7M) 대비 5배 경량화하며 준경쟁 성능 달성
-
----
-
-## 향후 연구 방향
-
-- **Knowledge Distillation**: SepFormer(교사) → Conv-TasNet(학생) 품질 이전
-- **Joint Learning**: 분리 손실 + 분류 손실 동시 최적화
-- **OOD 강건성 실험**: 새로운 TTS 시스템 대상 제로샷 평가
+1. The first **5-class compound audio-forgery taxonomy and detection framework**.
+2. Combines **source separation with physical acoustic features** for interpretable, evidence-based decisions.
+3. Quantifies the **SI-SNR ↔ FAKE-recall relationship**, demonstrating that separation quality is the dominant lever for detection performance.
+4. Conv-TasNet (5M params) achieves **5x parameter reduction** vs. SepFormer (25.7M) at near-competitive accuracy.
 
 ---
 
-## 데이터셋
+## Roadmap
 
-**CompSpoofV2** — [Zenodo](https://zenodo.org/record/8343807)  
-복합 오디오 위변조 데이터셋: 5가지 compound label, 총 ~50,000 샘플
+- **Knowledge distillation**: transfer separation quality from SepFormer (teacher) to Conv-TasNet (student).
+- **Joint learning**: jointly optimize separation loss and classification loss.
+- **OOD robustness**: zero-shot evaluation against unseen TTS systems (initial harness in `scripts/eval/zeroshot_wav2vec2.py`).
+- Reduce the FAKE ↔ SPOOF_SPEECH confusion (~32% of FAKE errors), driven by `env_score` overlap at the current separation quality.
 
 ---
 
-## 참고 문헌
+## Dataset
 
-- SepFormer: Subakan et al., ICASSP 2021
-- Conv-TasNet: Luo & Mesgarani, IEEE TASLP 2019  
-- SuDORM-RF: Tzinis et al., EUSIPCO 2020
-- AASIST: Jung et al., ICASSP 2022
-- WavLM: Chen et al., IEEE JSTSP 2022
+**CompSpoofV2** — [Zenodo](https://zenodo.org/record/8343807)
+A compound audio-forgery dataset spanning all five labels above, ~50,000 samples total.
+
+---
+
+## References
+
+- Subakan et al., "Attention is All You Need in Speech Separation," ICASSP 2021 (SepFormer)
+- Luo & Mesgarani, "Conv-TasNet: Surpassing Ideal Time-Frequency Magnitude Masking for Speech Separation," IEEE TASLP 2019
+- Tzinis et al., "Sudo rm -rf: Efficient Networks for Universal Audio Source Separation," EUSIPCO 2020
+- Jung et al., "AASIST: Audio Anti-Spoofing Using Integrated Spectro-Temporal Graph Attention Networks," ICASSP 2022
+- Chen et al., "WavLM: Large-Scale Self-Supervised Pre-Training for Full Stack Speech Processing," IEEE JSTSP 2022
+- Baevski et al., "wav2vec 2.0: A Framework for Self-Supervised Learning of Speech Representations," NeurIPS 2020
